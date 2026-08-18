@@ -85,6 +85,7 @@ def main():
             print("   -a:   Use ASCII only (no Unicode)")
             print("   -c1:  Force monochrome")
             print("   -c4:  Force 4-bit color (16 colors)")
+            print("   -c8:  Force 8-bit color (256 colors)")
             print("   -c24: Force 24-bit color")
             print("   --reliable: reliability QoS in ros2 (default: best_effort)")
             print("   --transient-local: durability QoS in ros2 (default: volatile)")
@@ -101,6 +102,8 @@ def main():
         color_support = termgraphics.COLOR_SUPPORT_1
     elif "-c4" in sys.argv:
         color_support = termgraphics.COLOR_SUPPORT_16
+    elif "-c8" in sys.argv:
+        color_support = termgraphics.COLOR_SUPPORT_256
     elif "-c24" in sys.argv:
         color_support = termgraphics.COLOR_SUPPORT_24BIT
     else:

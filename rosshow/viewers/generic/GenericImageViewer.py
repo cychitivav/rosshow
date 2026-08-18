@@ -77,20 +77,32 @@ class GenericImageViewer(object):
             print("GenericImageViewer error: received invalid image type %s" % str(type(image)))
             exit(1)
 
-        image_ratio = 0.5 * float(image_obj.size[1]) / image_obj.size[0] # height / width
-        terminal_ratio = 0.5 * float(h) / w  # height / width
+        # Addressable resolution: w/2 terminal columns by h/4 terminal rows. Rendering with
+        # half-blocks (top pixel = foreground, bottom pixel = background) doubles the
+        # vertical resolution to h/4 * 2 rows of pixels, each roughly square (since a
+        # terminal character cell is roughly twice as tall as it is wide), so no aspect
+        # fudge factor is needed here unlike a flat one-color-per-cell block.
+        max_width = int(w / 2.0)
+        max_height = int(h / 4.0) * 2
+
+        image_ratio = float(image_obj.size[1]) / image_obj.size[0] # height / width
+        terminal_ratio = float(max_height) / max_width
 
         if image_ratio > terminal_ratio:
-           target_image_height = int(h / 4.0)
+           target_image_height = max_height
            target_image_width = int(target_image_height / image_ratio)
         else:
-           target_image_width = int(w / 2.0)
+           target_image_width = max_width
            target_image_height = int(image_ratio * target_image_width)
 
-        resized_image_obj = image_obj.resize((target_image_width, target_image_height), PIL.Image.BILINEAR)
-        resized_image = np.fromstring(resized_image_obj.tobytes(), dtype = np.uint8).reshape(target_image_width, target_image_height, 3)
+        target_image_height -= target_image_height % 2 # must be even to pair into half-blocks
+        target_image_height = max(2, target_image_height)
+        target_image_width = max(1, target_image_width)
 
-        self.g.image(resized_image, target_image_width, target_image_height, (0, 0), image_type = termgraphics.IMAGE_RGB_2X4)
+        resized_image_obj = image_obj.resize((target_image_width, target_image_height), PIL.Image.BILINEAR)
+        resized_image = np.frombuffer(resized_image_obj.tobytes(), dtype = np.uint8).reshape(target_image_height, target_image_width, 3)
+
+        self.g.image(resized_image, target_image_width, target_image_height, (0, 0), image_type = termgraphics.IMAGE_RGB_HALFBLOCK)
 
         if self.title:
             self.g.set_color((0, 127, 255))

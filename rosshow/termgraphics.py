@@ -39,6 +39,7 @@ IMAGE_MONOCHROME = 0
 IMAGE_UINT8 = 1
 IMAGE_RGB_2X4 = 2
 IMAGE_RGB = 3
+IMAGE_RGB_HALFBLOCK = 4
 
 TABLE_EASCII = " '-'.*.|'~/~/F//-\\-~/>-&'\"\"\"/)//.\\\\\\_LLL'\"<C-=CC:\\-\\vD=D|Y|Y|)AH.!i!.ii|/\"/F/Fff//rkfPrkJJ/P/P/P//>brr>kl>&&*=fF/)vb/PPDJ)19/2/R.\\\\\\\\\\\\(=T([(((C=3-5cSct!919|7Ce,\\\\\\_\\\\\\i919i9(C|)\\\\+tv\\|719|7@9_L=L_LLL_=6[CEC[=;==c2ctJ]d=¿Z6E/\\;bsbsbj]SSd=66jj]bddsbJ]j]d]d8"
 
@@ -70,13 +71,45 @@ class TermGraphics(object):
 
         # or attempt to auto-detect
         if self.color_support is None:
-            if self.term_type in ['xterm-256color', 'xterm'] or self.term_color in ['truecolor', '24bit']:
+            term_type = (self.term_type or "").lower()
+            term_color = (self.term_color or "").lower()
+            # terminals known to only support 8/16 ANSI colors (or nothing useful).
+            # Everything else (including an empty/unset $TERM, which is common when
+            # attaching to a devcontainer via `docker exec` without a pty setup that
+            # forwards $COLORTERM) is assumed to support truecolor, since that's true
+            # of essentially every terminal emulator in use today. Use -c1/-c4/-c24
+            # to override if this guess is wrong for your terminal.
+            dumb_terminals = ('', 'dumb', 'linux', 'vt100', 'vt220', 'ansi', 'cygwin')
+            # $TERM values that in practice almost always mean the terminal emulator
+            # itself renders truecolor fine, even though the terminfo name only
+            # promises 256 colors (this includes VS Code's default integrated/devcontainer
+            # terminal, which reports xterm-256color).
+            likely_truecolor_terms = ('xterm-256color', 'xterm', 'alacritty', 'xterm-kitty', 'wezterm')
+            if term_color in ('truecolor', '24bit') or term_type in likely_truecolor_terms:
                 self.color_support = COLOR_SUPPORT_24BIT
-            else:
+            elif term_type in dumb_terminals:
                 self.color_support = COLOR_SUPPORT_16
+            elif '256color' in term_type:
+                self.color_support = COLOR_SUPPORT_256
+            else:
+                self.color_support = COLOR_SUPPORT_24BIT
 
     def _rgb_to_8(self, rgb):
         return (rgb[2] >= 127) << 2 | (rgb[1] >= 127)<<1 | (rgb[0] >= 127)
+
+    def _rgb_to_256(self, rgb):
+        """Maps an RGB color to the closest color in the standard xterm 256-color palette."""
+        r, g, b = int(rgb[0]), int(rgb[1]), int(rgb[2])
+        if abs(r - g) < 10 and abs(g - b) < 10 and abs(r - b) < 10:
+            # near-greyscale: the 24-step greyscale ramp gives better fidelity than the color cube
+            grey = (r + g + b) / 3.0
+            if grey < 8:
+                return 16
+            if grey > 248:
+                return 231
+            return 232 + int(round((grey - 8) / 247.0 * 24))
+        to6 = lambda x: int(round(x / 255.0 * 5))
+        return 16 + 36 * to6(r) + 6 * to6(g) + to6(b)
 
     def clear(self):
         """
@@ -85,6 +118,7 @@ class TermGraphics(object):
         self.buffer &= 0
         self.buffer |= 0x2800
         self.colors &= 0
+        self.has_bg[:] = False
 
     def update_shape(self):
         """
@@ -98,9 +132,13 @@ class TermGraphics(object):
             self.shape = (self.term_shape[0]*2, self.term_shape[1]*4)
             self.buffer = np.frombuffer((b'\x28\x00' * (self.term_shape[0] * self.term_shape[1])), dtype = np.uint16).reshape((self.term_shape[1], self.term_shape[0])).copy()
             self.colors = np.frombuffer((b'\xff\xff\xff' * (self.term_shape[0] * self.term_shape[1])), dtype = np.uint8).reshape((self.term_shape[1], self.term_shape[0], 3)).copy()
+            self.colors_bg = np.zeros((self.term_shape[1], self.term_shape[0], 3), dtype = np.uint8)
+            self.has_bg = np.zeros((self.term_shape[1], self.term_shape[0]), dtype = bool)
             self.igrid, self.jgrid = np.meshgrid(np.arange(self.buffer.shape[1]), np.arange(self.buffer.shape[0]))
             self.last_buffer = None
             self.last_colors = None
+            self.last_colors_bg = None
+            self.last_has_bg = None
             return True
         return False
 
@@ -161,6 +199,7 @@ class TermGraphics(object):
         text = text[0:self.term_shape[0] - i]
         self.buffer[j, i:i+len(text)] = np.frombuffer(text.encode(), dtype = np.uint8)
         self.colors[j, i:i+len(text), :] = self.current_color
+        self.has_bg[j, i:i+len(text)] = False
     
     def poly(self, points):
         """
@@ -278,7 +317,31 @@ class TermGraphics(object):
             img = img[where_valid]
             self.buffer[screen_js, screen_is] = 0x2588
             self.colors[screen_js, screen_is, :] = img
-    
+
+        elif image_type == IMAGE_RGB_HALFBLOCK:
+            """
+            Like IMAGE_RGB_2X4, but doubles vertical resolution by using the unicode
+            upper-half-block character (top pixel = foreground color, bottom pixel =
+            background color) instead of one flat-colored full block per cell.
+            `data` must have an even `height`; each terminal row consumes 2 image rows.
+            """
+            img = np.reshape(data, (height, width, 3))
+            top = img[0::2, :, :]
+            bottom = img[1::2, :, :]
+            screen_is, screen_js = np.meshgrid(np.arange(top.shape[1]), np.arange(top.shape[0]))
+            screen_is += (point[0] >> 1)
+            screen_js += (point[1] >> 2)
+            where_valid = (screen_is >= 0) & (screen_js >= 0) & \
+                (screen_is < self.term_shape[0]) & (screen_js < self.term_shape[1])
+            screen_is = screen_is[where_valid]
+            screen_js = screen_js[where_valid]
+            top = top[where_valid]
+            bottom = bottom[where_valid]
+            self.buffer[screen_js, screen_is] = 0x2580
+            self.colors[screen_js, screen_is, :] = top
+            self.colors_bg[screen_js, screen_is, :] = bottom
+            self.has_bg[screen_js, screen_is] = True
+
     def draw(self):
         """
         Shows the graphics buffer on the screen. Must be called in order to see output.
@@ -287,47 +350,67 @@ class TermGraphics(object):
         self.seq += 1
 
         sys.stdout.write("\033[H")
-    
+
         current_draw_color = -1
-   
-        if self.seq % 100 == 0 or self.last_colors is None or self.last_buffer is None:
+        current_draw_bg = None # None means "terminal's default background"
+
+        if self.seq % 100 == 0 or self.last_colors is None or self.last_buffer is None or self.last_has_bg is None:
             where_diff = np.ones(self.buffer.shape, dtype = bool)
         else:
             where_diff = (self.buffer != self.last_buffer) | \
                          (self.colors[:, :, 0] != self.last_colors[:, :, 0]) | \
                          (self.colors[:, :, 1] != self.last_colors[:, :, 1]) | \
-                         (self.colors[:, :, 2] != self.last_colors[:, :, 2])
+                         (self.colors[:, :, 2] != self.last_colors[:, :, 2]) | \
+                         (self.has_bg != self.last_has_bg) | \
+                         (self.colors_bg[:, :, 0] != self.last_colors_bg[:, :, 0]) | \
+                         (self.colors_bg[:, :, 1] != self.last_colors_bg[:, :, 1]) | \
+                         (self.colors_bg[:, :, 2] != self.last_colors_bg[:, :, 2])
 
         digrid = self.igrid[where_diff]
         djgrid = self.jgrid[where_diff]
         dbuffer = self.buffer[where_diff]
         dcolors = self.colors[where_diff, :]
+        dcolors_bg = self.colors_bg[where_diff, :]
+        dhas_bg = self.has_bg[where_diff]
 
         last_i = -1
         last_j = -1
         for n in range(digrid.shape[0]):
-            i, j, b, c = digrid[n], djgrid[n], dbuffer[n], dcolors[n]
+            i, j, b, c, cb, hb = digrid[n], djgrid[n], dbuffer[n], dcolors[n], dcolors_bg[n], dhas_bg[n]
 
             # move cursor to new absolute position if it is a movement by more than 1
             if last_j != j or i - last_i > 1:
                 sys.stdout.write("\033[" + str(j+1) + ";" + str(i+1) + "H")
-    
+
             if np.any(c != current_draw_color):
                 current_draw_color = c
                 if self.color_support == COLOR_SUPPORT_24BIT:
                   sys.stdout.write("\033[38;2;{};{};{}m".format(current_draw_color[0], current_draw_color[1], current_draw_color[2]))
-                elif self.color_support == COLOR_SUPPORT_256: # TODO support 256 colors but fall back to 16 for now
-                  sys.stdout.write("\033[3" + str(self._rgb_to_8(current_draw_color)) + "m")
+                elif self.color_support == COLOR_SUPPORT_256:
+                  sys.stdout.write("\033[38;5;" + str(self._rgb_to_256(current_draw_color)) + "m")
                 elif self.color_support == COLOR_SUPPORT_16:  # TODO actually implement colors 9-15
                   sys.stdout.write("\033[3" + str(self._rgb_to_8(current_draw_color)) + "m")
                 # else do nothing -- monochrome
+
+            if hb:
+                if current_draw_bg is None or np.any(cb != current_draw_bg):
+                    current_draw_bg = cb
+                    if self.color_support == COLOR_SUPPORT_24BIT:
+                      sys.stdout.write("\033[48;2;{};{};{}m".format(cb[0], cb[1], cb[2]))
+                    elif self.color_support == COLOR_SUPPORT_256:
+                      sys.stdout.write("\033[48;5;" + str(self._rgb_to_256(cb)) + "m")
+                    elif self.color_support == COLOR_SUPPORT_16:
+                      sys.stdout.write("\033[4" + str(self._rgb_to_8(cb)) + "m")
+            elif current_draw_bg is not None:
+                current_draw_bg = None
+                sys.stdout.write("\033[49m")
 
             if self.mode == MODE_UNICODE:
                 sys.stdout.write(unichr(b))
             elif self.mode == MODE_EASCII:
                 if b & 0xFF00 == 0x2800:
                     sys.stdout.write(TABLE_EASCII[b & 0x00FF])
-                elif b == 0x2588:
+                elif b == 0x2588 or b == 0x2580:
                     sys.stdout.write("#")
                 elif b & 0xFF00 == 0x00 and b & 0x00FF != 0x00:
                     sys.stdout.write(chr(b & 0x00FF))
@@ -337,11 +420,13 @@ class TermGraphics(object):
             last_i = i
             last_j = j
 
-        sys.stdout.write("\033[37m")
+        sys.stdout.write("\033[0m")
         sys.stdout.flush()
 
         self.last_buffer = self.buffer.copy()
         self.last_colors = self.colors.copy()
+        self.last_colors_bg = self.colors_bg.copy()
+        self.last_has_bg = self.has_bg.copy()
 
 if __name__ == '__main__':
     # perform a test if run directly
