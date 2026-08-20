@@ -126,7 +126,7 @@ def main():
     topic_types = dict(rospy.get_published_topics())
     if TOPIC not in topic_types:
         print("Topic {0} does not appear to be published yet.".format(TOPIC))
-        sys.exit(0)
+        sys.exit(1)
     
     topic_type = topic_types[TOPIC]
     if rospy.__name__ == "rospy2":
@@ -135,7 +135,7 @@ def main():
 
     if topic_type not in VIEWER_MAPPING:
         print("Unsupported message type.")
-        exit()
+        sys.exit(1)
 
     # Create the canvas and viewer accordingly
 
