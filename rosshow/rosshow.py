@@ -125,7 +125,7 @@ def main():
     time.sleep(1) # give a little time for topics discovery
     topic_types = dict(rospy.get_published_topics())
     if TOPIC not in topic_types:
-        print("Topic {0} does not appear to be published yet.".format(TOPIC))
+        sys.stderr.write("Topic {0} does not appear to be published yet.\n".format(TOPIC))
         sys.exit(1)
     
     topic_type = topic_types[TOPIC]
@@ -134,7 +134,7 @@ def main():
         topic_type = topic_type.replace("/msg/", "/")
 
     if topic_type not in VIEWER_MAPPING:
-        print("Unsupported message type.")
+        sys.stderr.write("Unsupported message type.\n")
         sys.exit(1)
 
     # Create the canvas and viewer accordingly
