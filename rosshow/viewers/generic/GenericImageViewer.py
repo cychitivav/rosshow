@@ -77,11 +77,7 @@ class GenericImageViewer(object):
             print("GenericImageViewer error: received invalid image type %s" % str(type(image)))
             exit(1)
 
-        # Addressable resolution: w/2 terminal columns by h/4 terminal rows. Rendering with
-        # half-blocks (top pixel = foreground, bottom pixel = background) doubles the
-        # vertical resolution to h/4 * 2 rows of pixels, each roughly square (since a
-        # terminal character cell is roughly twice as tall as it is wide), so no aspect
-        # fudge factor is needed here unlike a flat one-color-per-cell block.
+        # Half-blocks render w/2 × h/2 square-ish pixels, so no aspect-ratio correction is needed
         max_width = int(w / 2.0)
         max_height = int(h / 4.0) * 2
 
