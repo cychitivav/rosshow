@@ -73,18 +73,8 @@ class TermGraphics(object):
         if self.color_support is None:
             term_type = (self.term_type or "").lower()
             term_color = (self.term_color or "").lower()
-            # terminals known to only support 8/16 ANSI colors (or nothing useful).
-            # Everything else (including an empty/unset $TERM, which is common when
-            # attaching to a devcontainer via `docker exec` without a pty setup that
-            # forwards $COLORTERM) is assumed to support truecolor, since that's true
-            # of essentially every terminal emulator in use today. Use -c1/-c4/-c24
-            # to override if this guess is wrong for your terminal.
-            dumb_terminals = ('', 'dumb', 'linux', 'vt100', 'vt220', 'ansi', 'cygwin')
-            # $TERM values that in practice almost always mean the terminal emulator
-            # itself renders truecolor fine, even though the terminfo name only
-            # promises 256 colors (this includes VS Code's default integrated/devcontainer
-            # terminal, which reports xterm-256color).
-            likely_truecolor_terms = ('xterm-256color', 'xterm', 'alacritty', 'xterm-kitty', 'wezterm')
+            dumb_terminals = ('', 'dumb', 'linux', 'vt100', 'vt220', 'ansi', 'cygwin') # Assume truecolor unless the terminal is known to support only 8 or 16 colors; use -c1, -c4, or -c24 to override.
+            likely_truecolor_terms = ('xterm-256color', 'xterm', 'alacritty', 'xterm-kitty', 'wezterm') # Terminals that render truecolor despite reporting only 256-color support
             if term_color in ('truecolor', '24bit') or term_type in likely_truecolor_terms:
                 self.color_support = COLOR_SUPPORT_24BIT
             elif term_type in dumb_terminals:
